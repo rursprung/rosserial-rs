@@ -1,3 +1,4 @@
+use crate::RosSerialMsg;
 use Error::*;
 use std::fmt::{Display, Formatter};
 use tokio_util::bytes::{Buf, BufMut, BytesMut};
@@ -56,12 +57,6 @@ impl std::error::Error for Error {
 
 /// All methods in this module will return this kind of Result.
 pub type Result<T> = std::result::Result<T, Error>;
-
-#[derive(Debug, Default, PartialEq, Clone)]
-pub struct RosSerialMsg {
-    pub(crate) topic: Option<u16>,
-    pub(crate) msg: Vec<u8>,
-}
 
 const HEADER: u8 = b'\xff';
 const PROTOCOL_VERSION_2: u8 = b'\xfe';
