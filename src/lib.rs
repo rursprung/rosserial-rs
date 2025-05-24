@@ -10,7 +10,7 @@ mod codec;
 
 use crate::codec::{RosSerialMsg, RosSerialMsgCodec};
 use futures::SinkExt;
-use log::{debug, warn};
+use log::{debug, error, info, warn};
 use rosrust::RosMsg;
 use std::fmt::{Display, Formatter};
 use tokio_stream::StreamExt;
@@ -86,7 +86,12 @@ impl RosSerial {
 
     async fn handle_msg(&mut self, msg: RosSerialMsg) -> Result<()> {
         match msg.topic {
-            Some(rosrust_msg::rosserial_msgs::TopicInfo::ID_TIME) => self.handle_time_request().await?,
+            Some(rosrust_msg::rosserial_msgs::TopicInfo::ID_TIME) => {
+                self.handle_time_request().await?
+            }
+            Some(rosrust_msg::rosserial_msgs::TopicInfo::ID_LOG) => {
+                self.handle_logging_request(msg).await?
+            }
             Some(t) => warn!("unimplemented core topic: {:?}", t),
             _ => warn!("received unknown topic: {:?}", msg.topic),
         }
@@ -102,6 +107,32 @@ impl RosSerial {
             msg: time.encode_vec()?,
         };
         self.serial.send(response).await?;
+        Ok(())
+    }
+
+    async fn handle_logging_request(&mut self, msg: RosSerialMsg) -> Result<()> {
+        // TODO: use rosrust logging methods instead
+        let log_msg = rosrust_msg::rosserial_msgs::Log::decode(&msg.msg[..])?;
+        match log_msg.level {
+            rosrust_msg::rosserial_msgs::Log::ROSDEBUG => {
+                debug!("{}", log_msg.msg);
+            }
+            rosrust_msg::rosserial_msgs::Log::INFO => {
+                info!("{}", log_msg.msg);
+            }
+            rosrust_msg::rosserial_msgs::Log::WARN => {
+                warn!("{}", log_msg.msg);
+            }
+            rosrust_msg::rosserial_msgs::Log::ERROR => {
+                error!("{}", log_msg.msg);
+            }
+            rosrust_msg::rosserial_msgs::Log::FATAL => {
+                error!("{}", log_msg.msg);
+            }
+            _ => {
+                error!("unimplemented log message level: {:?}", log_msg);
+            }
+        }
         Ok(())
     }
 
