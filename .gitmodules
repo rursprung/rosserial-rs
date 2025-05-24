@@ -1,0 +1,3 @@
+[submodule "ros_msgs/rosserial"]
+	path = ros_msgs/rosserial
+	url = https://github.com/ros-drivers/rosserial.git

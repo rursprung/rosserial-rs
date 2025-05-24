@@ -59,7 +59,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, Default, PartialEq, Clone)]
 pub struct RosSerialMsg {
-    pub(crate) topic: u16,
+    pub(crate) topic: Option<u16>,
     pub(crate) msg: Vec<u8>,
 }
 
@@ -114,7 +114,6 @@ impl Decoder for RosSerialMsgCodec {
         if checksum != 255 {
             return Err(InvalidLengthChecksum(checksum));
         }
-        // TODO: original checksum check is different: sum(array.array("B", msg_len_bytes)) % 256 != 255
 
         let topic_id = match src.try_get_u16_le() {
             Ok(topic_id) => topic_id,
@@ -151,7 +150,7 @@ impl Decoder for RosSerialMsgCodec {
         }
 
         Ok(Some(RosSerialMsg {
-            topic: topic_id,
+            topic: Some(topic_id),
             msg: data,
         }))
     }
@@ -163,7 +162,26 @@ impl Encoder<RosSerialMsg> for RosSerialMsgCodec {
     fn encode(&mut self, item: RosSerialMsg, dst: &mut BytesMut) -> Result<()> {
         dst.put_u8(HEADER);
         dst.put_u8(PROTOCOL_VERSION_2);
+
+        // hack(ish) way of sending raw messages
+        if item.topic.is_none() {
+            dst.put_slice(item.msg.as_slice());
+            return Ok(());
+        }
+
+        let length_bytes = (item.msg.len() as u16).to_le_bytes();
+        dst.put_slice(length_bytes.as_slice());
+
+        let length_checksum = calc_checksum(length_bytes.iter().copied());
+        dst.put_u8(length_checksum);
+
+        let topic_bytes = item.topic.unwrap().to_le_bytes();
+        dst.put_slice(topic_bytes.as_slice());
+
         dst.put_slice(item.msg.as_slice());
+
+        let msg_checksum = 255 - calc_checksum(topic_bytes.iter().chain(item.msg.iter()).copied());
+        dst.put_u8(msg_checksum);
 
         Ok(())
     }
@@ -182,7 +200,7 @@ mod tests {
         let mut codec = RosSerialMsgCodec.framed(stream);
 
         if let Some(Ok(msg)) = codec.next().await {
-            assert_eq!(msg.topic, 10);
+            assert_eq!(msg.topic, Some(10));
             let count_nonzero = msg.msg.iter().filter(|&b| *b != b'\0').count();
             assert_eq!(count_nonzero, 0);
         }

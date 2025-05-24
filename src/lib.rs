@@ -10,8 +10,8 @@ mod codec;
 
 use crate::codec::{RosSerialMsg, RosSerialMsgCodec};
 use futures::SinkExt;
-use log::{debug, info, warn};
-use num_traits::FromPrimitive;
+use log::{debug, warn};
+use rosrust::RosMsg;
 use std::fmt::{Display, Formatter};
 use tokio_stream::StreamExt;
 use tokio_util::codec::{Decoder, Framed};
@@ -21,12 +21,15 @@ use tokio_util::codec::{Decoder, Framed};
 pub enum Error {
     /// Errors from [`codec`]
     CodecError(codec::Error),
+    /// General IO Errors
+    IoError(std::io::Error),
 }
 
 impl Display for Error {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::CodecError(_) => write!(f, "the codec encountered an error"),
+            Error::IoError(_) => write!(f, "IO error"),
         }
     }
 }
@@ -37,33 +40,23 @@ impl From<codec::Error> for Error {
     }
 }
 
+impl From<std::io::Error> for Error {
+    fn from(e: std::io::Error) -> Self {
+        Error::IoError(e)
+    }
+}
+
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Error::CodecError(e) => Some(e),
+            Error::IoError(e) => Some(e),
         }
     }
 }
 
 /// All methods in this crate will return this kind of Result.
 pub type Result<T> = std::result::Result<T, Error>;
-
-pub(crate) mod rosserial_msgs {
-    use num_derive::FromPrimitive;
-
-    /// Taken from https://github.com/ros-drivers/rosserial/blob/noetic-devel/rosserial_msgs/msg/TopicInfo.msg
-    #[derive(Debug, FromPrimitive)]
-    pub(crate) enum TopicInfoIds {
-        Publisher = 0,
-        Subscriber = 1,
-        ServiceServer = 2,
-        ServiceClient = 4,
-        ParameterRequest = 6,
-        Log = 7,
-        Time = 10,
-        TxStop = 11,
-    }
-}
 
 /// Represents a ROS Serial connection to a serial port.
 //#[derive(Debug)]
@@ -84,7 +77,7 @@ impl RosSerial {
     /// Run the communication
     pub async fn run(&mut self) -> Result<()> {
         while let Some(Ok(msg)) = self.serial.next().await {
-            debug!("received msg in topic {} = {:?}", msg.topic, msg.msg); // TODO: trace
+            debug!("received message: {:?}", msg); // TODO: trace
             self.handle_msg(msg).await?;
         }
 
@@ -92,20 +85,30 @@ impl RosSerial {
     }
 
     async fn handle_msg(&mut self, msg: RosSerialMsg) -> Result<()> {
-        match rosserial_msgs::TopicInfoIds::from_u16(msg.topic) {
-            Some(rosserial_msgs::TopicInfoIds::Time) => info!("TODO: handle TIME messages"),
+        match msg.topic {
+            Some(rosrust_msg::rosserial_msgs::TopicInfo::ID_TIME) => self.handle_time_request().await?,
             Some(t) => warn!("unimplemented core topic: {:?}", t),
-            _ => warn!("received unknown topic: {}", msg.topic),
+            _ => warn!("received unknown topic: {:?}", msg.topic),
         }
 
         Ok(())
     }
 
-    async fn send(&mut self, data: &[u8]) -> Result<()> {
-        // TODO: this is a hack, we should use the topic here... right?
+    async fn handle_time_request(&mut self) -> Result<()> {
+        debug!("responding to time message");
+        let time = rosrust::wall_time::now();
+        let response = RosSerialMsg {
+            topic: Some(rosrust_msg::rosserial_msgs::TopicInfo::ID_TIME),
+            msg: time.encode_vec()?,
+        };
+        self.serial.send(response).await?;
+        Ok(())
+    }
+
+    async fn send_raw(&mut self, data: &[u8]) -> Result<()> {
         self.serial
             .send(RosSerialMsg {
-                topic: 0,
+                topic: None,
                 msg: data.to_vec(),
             })
             .await?;
@@ -113,6 +116,6 @@ impl RosSerial {
     }
 
     async fn request_topics(&mut self) -> Result<()> {
-        self.send(b"\x00\x00\xff\x00\x00\xff").await
+        self.send_raw(b"\x00\x00\xff\x00\x00\xff").await
     }
 }

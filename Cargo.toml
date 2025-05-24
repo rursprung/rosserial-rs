@@ -10,9 +10,15 @@ futures = "0.3"
 tokio-serial = "5"
 tokio-stream = "0.1"
 
-num-traits = "0.2"
-num-derive = "0.4"
-
 log = "0.4"
 env_logger = "0.11"
 
+
+rosrust = "0.9"
+rosrust_msg = "0.1"
+
+[patch.crates-io]
+# temporary until https://github.com/adnanademovic/rosrust/pull/217 is merged & released
+xml-rpc = { git = "https://github.com/rursprung/xml-rpc-rs.git", branch = "migrate-hyper-to-reqwest" }
+rosrust = { git = "https://github.com/rursprung/rosrust.git", branch = "update-to-xml-rpc-0.2.0-patched" }
+rosrust_msg = { git = "https://github.com/rursprung/rosrust.git", branch = "update-to-xml-rpc-0.2.0-patched" }
