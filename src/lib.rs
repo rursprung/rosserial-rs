@@ -11,9 +11,14 @@ mod codec;
 use crate::codec::RosSerialMsgCodec;
 use futures::SinkExt;
 use log::{debug, error, info, trace, warn};
-use rosrust::RosMsg;
+use rosrust::error::ResponseError;
+use rosrust::{
+    Publisher, RawMessage, RawMessageDescription, RosMsg, ros_debug, ros_err, ros_fatal, ros_info,
+    ros_warn,
+};
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
+use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tokio_util::codec::{Decoder, Framed};
 
@@ -24,6 +29,10 @@ pub enum Error {
     CodecError(codec::Error),
     /// General IO Errors
     IoError(std::io::Error),
+    /// Error coming from the integration with [`rosrust`].
+    RosError(Box<dyn std::error::Error>),
+    /// The requested ROS parameter was not found
+    RosParamNotFound(String),
 }
 
 impl Display for Error {
@@ -31,6 +40,8 @@ impl Display for Error {
         match self {
             Error::CodecError(_) => write!(f, "the codec encountered an error"),
             Error::IoError(_) => write!(f, "IO error"),
+            Error::RosError(_) => write!(f, "ROS error"),
+            Error::RosParamNotFound(p) => write!(f, "The ROS parameter {} was not found", p),
         }
     }
 }
@@ -47,11 +58,25 @@ impl From<std::io::Error> for Error {
     }
 }
 
+impl From<ResponseError> for Error {
+    fn from(e: ResponseError) -> Self {
+        Error::RosError(Box::new(e))
+    }
+}
+
+impl From<rosrust::error::Error> for Error {
+    fn from(e: rosrust::error::Error) -> Self {
+        Error::RosError(Box::new(e))
+    }
+}
+
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Error::CodecError(e) => Some(e),
             Error::IoError(e) => Some(e),
+            Error::RosError(e) => Some(e.as_ref()),
+            _ => None,
         }
     }
 }
@@ -68,28 +93,35 @@ pub struct RosSerialMsg {
     pub msg: Vec<u8>,
 }
 
-/// Represents a ROS Serial connection to a serial port.
-//#[derive(Debug)]
-#[allow(missing_debug_implementations)]
-pub struct RosSerial<F> {
-    serial: Framed<tokio_serial::SerialStream, RosSerialMsgCodec>,
-    publisher_topics: HashMap<u16, rosrust_msg::rosserial_msgs::TopicInfo>,
-    subscriber_topics: HashMap<u16, rosrust_msg::rosserial_msgs::TopicInfo>,
-    pub_topics_handler_fn: F,
+impl From<RosSerialMsg> for RawMessage {
+    fn from(msg: RosSerialMsg) -> Self {
+        RawMessage(msg.msg)
+    }
 }
 
-impl<F> RosSerial<F>
-where
-    F: AsyncFnMut(&str, &str, Vec<u8>) -> Result<()>
+/// Represents a ROS Serial connection to a serial port.
+///
+/// To use this you _must_ have a running ROS core and have initialized a ROS node using [`rosrust`].
+//#[derive(Debug)]
+#[allow(missing_debug_implementations)]
+pub struct RosSerial {
+    serial: Framed<tokio_serial::SerialStream, RosSerialMsgCodec>,
+    publishers: HashMap<u16, Publisher<RawMessage>>,
+    subscribers: HashMap<u16, mpsc::Receiver<RawMessage>>,
+}
+
+impl RosSerial
+//where
+//    F: AsyncFnMut(&str, &str, Vec<u8>) -> Result<()>
 {
     /// Create a new ROS Serial connection.
-    pub async fn new(serial: tokio_serial::SerialStream, pub_topics_handler_fn: F) -> Result<Self> {
+    pub async fn new(serial: tokio_serial::SerialStream) -> Result<Self> {
         let serial = RosSerialMsgCodec.framed(serial);
+
         let mut this = RosSerial {
             serial,
-            publisher_topics: HashMap::new(),
-            subscriber_topics: HashMap::new(),
-            pub_topics_handler_fn,
+            publishers: HashMap::new(),
+            subscribers: HashMap::new(),
         };
         this.request_topics().await?;
         Ok(this)
@@ -106,10 +138,18 @@ where
     }
 
     async fn handle_msg(&mut self, msg: RosSerialMsg) -> Result<()> {
-        const ID_SERVICE_SERVER_PUBLISHER: u16 = rosrust_msg::rosserial_msgs::TopicInfo::ID_SERVICE_SERVER + rosrust_msg::rosserial_msgs::TopicInfo::ID_PUBLISHER;
-        const ID_SERVICE_SERVER_SUBSCRIBER: u16 = rosrust_msg::rosserial_msgs::TopicInfo::ID_SERVICE_SERVER + rosrust_msg::rosserial_msgs::TopicInfo::ID_SUBSCRIBER;
-        const ID_SERVICE_CLIENT_PUBLISHER: u16 = rosrust_msg::rosserial_msgs::TopicInfo::ID_SERVICE_CLIENT + rosrust_msg::rosserial_msgs::TopicInfo::ID_PUBLISHER;
-        const ID_SERVICE_CLIENT_SUBSCRIBER: u16 = rosrust_msg::rosserial_msgs::TopicInfo::ID_SERVICE_CLIENT + rosrust_msg::rosserial_msgs::TopicInfo::ID_SUBSCRIBER;
+        const ID_SERVICE_SERVER_PUBLISHER: u16 =
+            rosrust_msg::rosserial_msgs::TopicInfo::ID_SERVICE_SERVER
+                + rosrust_msg::rosserial_msgs::TopicInfo::ID_PUBLISHER;
+        const ID_SERVICE_SERVER_SUBSCRIBER: u16 =
+            rosrust_msg::rosserial_msgs::TopicInfo::ID_SERVICE_SERVER
+                + rosrust_msg::rosserial_msgs::TopicInfo::ID_SUBSCRIBER;
+        const ID_SERVICE_CLIENT_PUBLISHER: u16 =
+            rosrust_msg::rosserial_msgs::TopicInfo::ID_SERVICE_CLIENT
+                + rosrust_msg::rosserial_msgs::TopicInfo::ID_PUBLISHER;
+        const ID_SERVICE_CLIENT_SUBSCRIBER: u16 =
+            rosrust_msg::rosserial_msgs::TopicInfo::ID_SERVICE_CLIENT
+                + rosrust_msg::rosserial_msgs::TopicInfo::ID_SUBSCRIBER;
         match msg.topic {
             Some(rosrust_msg::rosserial_msgs::TopicInfo::ID_TIME) => {
                 self.handle_time_request().await?
@@ -126,18 +166,27 @@ where
             Some(rosrust_msg::rosserial_msgs::TopicInfo::ID_PARAMETER_REQUEST) => {
                 self.handle_parameter_request(msg).await?
             }
-            Some(ID_SERVICE_SERVER_PUBLISHER) => warn!("unimplemented ID_SERVICE_SERVER_PUBLISHER! {:?}", msg),
-            Some(ID_SERVICE_SERVER_SUBSCRIBER) => warn!("unimplemented ID_SERVICE_SERVER_SUBSCRIBER! {:?}", msg),
-            Some(ID_SERVICE_CLIENT_PUBLISHER) => warn!("unimplemented ID_SERVICE_CLIENT_PUBLISHER! {:?}", msg),
-            Some(ID_SERVICE_CLIENT_SUBSCRIBER) => warn!("unimplemented ID_SERVICE_CLIENT_SUBSCRIBER! {:?}", msg),
+            Some(ID_SERVICE_SERVER_PUBLISHER) => {
+                warn!("unimplemented ID_SERVICE_SERVER_PUBLISHER! {:?}", msg)
+            }
+            Some(ID_SERVICE_SERVER_SUBSCRIBER) => {
+                warn!("unimplemented ID_SERVICE_SERVER_SUBSCRIBER! {:?}", msg)
+            }
+            Some(ID_SERVICE_CLIENT_PUBLISHER) => {
+                warn!("unimplemented ID_SERVICE_CLIENT_PUBLISHER! {:?}", msg)
+            }
+            Some(ID_SERVICE_CLIENT_SUBSCRIBER) => {
+                warn!("unimplemented ID_SERVICE_CLIENT_SUBSCRIBER! {:?}", msg)
+            }
             Some(t) => {
-                if let Some(topic_info) = self.publisher_topics.get(&t) {
-                    (self.pub_topics_handler_fn)(topic_info.topic_name.as_str(), topic_info.message_type.as_str(), msg.msg).await?;
+                if let Some(publisher) = self.publishers.get(&t) {
+                    info!("forwarding (publishing) message on topic {}", t);
+                    publisher.send(msg.into())?;
                 } else {
                     warn!("unknown topic: {:?}", t);
                     self.request_topics().await?;
                 }
-            },
+            }
             _ => warn!("received unknown topic: {:?}", msg.topic),
         }
 
@@ -156,23 +205,22 @@ where
     }
 
     async fn handle_logging_request(&mut self, msg: RosSerialMsg) -> Result<()> {
-        // TODO: use rosrust logging methods instead
         let log_msg = rosrust_msg::rosserial_msgs::Log::decode(&msg.msg[..])?;
         match log_msg.level {
             rosrust_msg::rosserial_msgs::Log::ROSDEBUG => {
-                debug!("{}", log_msg.msg);
+                ros_debug!("{}", log_msg.msg);
             }
             rosrust_msg::rosserial_msgs::Log::INFO => {
-                info!("{}", log_msg.msg);
+                ros_info!("{}", log_msg.msg);
             }
             rosrust_msg::rosserial_msgs::Log::WARN => {
-                warn!("{}", log_msg.msg);
+                ros_warn!("{}", log_msg.msg);
             }
             rosrust_msg::rosserial_msgs::Log::ERROR => {
-                error!("{}", log_msg.msg);
+                ros_err!("{}", log_msg.msg);
             }
             rosrust_msg::rosserial_msgs::Log::FATAL => {
-                error!("{}", log_msg.msg);
+                ros_fatal!("{}", log_msg.msg);
             }
             _ => {
                 error!("unimplemented log message level: {:?}", log_msg);
@@ -187,8 +235,24 @@ where
             "setting up publisher on {} [{}]",
             topic_info.topic_name, topic_info.message_type
         );
-        self.publisher_topics
-            .insert(topic_info.topic_id, topic_info);
+
+        let description = RawMessageDescription {
+            msg_definition: "*".to_string(),
+            md5sum: topic_info.md5sum,
+            msg_type: topic_info.message_type,
+        };
+
+        let publisher = tokio::task::spawn_blocking(move || {
+            rosrust::publish_with_description(
+                topic_info.topic_name.as_str(),
+                topic_info.buffer_size as usize,
+                description,
+            )
+        })
+        .await
+        .map_err(|e| Error::RosError(e.into()))??;
+        self.publishers.insert(topic_info.topic_id, publisher);
+
         Ok(())
     }
 
@@ -198,14 +262,33 @@ where
             "setting up subscriber on {} [{}]",
             topic_info.topic_name, topic_info.message_type
         );
-        self.subscriber_topics
-            .insert(topic_info.topic_id, topic_info);
+
+        let (tx, rx) = mpsc::channel(1000);
+
+        self.subscribers.insert(topic_info.topic_id, rx);
+
+        tokio::task::spawn_blocking(move || {
+            let topic_name = topic_info.topic_name.clone();
+            rosrust::subscribe(
+                topic_info.topic_name.as_str(),
+                topic_info.buffer_size as usize,
+                move |msg: RawMessage| {
+                    tx.blocking_send(msg).unwrap_or_else(|e| {
+                        error!("failed to send message on topic {}: {}", topic_name, e)
+                    });
+                },
+            )
+        })
+        .await
+        .map_err(|e| Error::RosError(e.into()))??;
         Ok(())
     }
 
     async fn handle_parameter_request(&mut self, msg: RosSerialMsg) -> Result<()> {
         let request = rosrust_msg::rosserial_msgs::RequestParamReq::decode(&msg.msg[..])?;
         debug!("handling parameter request: {:?}", request);
+        //let param = rosrust::param(request.name.as_str()).ok_or(RosParamNotFound(request.name))?;
+        //param.exists()?;
         // TODO: handle request
         let response = rosrust_msg::rosserial_msgs::RequestParamRes {
             floats: Vec::new(),

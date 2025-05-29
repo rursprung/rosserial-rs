@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal", "io-util", "sync"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 futures = "0.3"
 tokio-serial = "5"
@@ -16,6 +16,9 @@ env_logger = "0.11"
 
 rosrust = "0.9"
 rosrust_msg = "0.1"
+
+ros-core-rs = "0.2"
+url = "2"
 
 [patch.crates-io]
 # temporary until https://github.com/adnanademovic/rosrust/pull/217 is merged & released
