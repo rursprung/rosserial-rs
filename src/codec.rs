@@ -14,6 +14,7 @@ pub enum Error {
     /// The checksum validation for the message body failed.
     InvalidMessageChecksum(u8),
     /// An underlying IO error occurred.
+    #[allow(clippy::enum_variant_names)]
     IoError(std::io::Error),
 }
 
@@ -67,7 +68,7 @@ fn calc_checksum(bytes: impl Iterator<Item = u8>) -> u8 {
     let mut checksum: u16 = 0;
     for byte in bytes {
         checksum += byte as u16;
-        checksum = checksum % 256;
+        checksum %= 256;
     }
     checksum as u8
 }
@@ -141,7 +142,7 @@ impl Decoder for RosSerialMsgCodec {
         );
 
         if checksum != 255 {
-            return Err(InvalidMessageChecksum(checksum as u8));
+            return Err(InvalidMessageChecksum(checksum));
         }
 
         Ok(Some(RosSerialMsg {

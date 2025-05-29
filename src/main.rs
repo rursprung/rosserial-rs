@@ -20,7 +20,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         );
         return Err("expected exactly one argument".into());
     }
-    let port = args.get(0).unwrap();
+    let port = args.first().unwrap();
 
     // Spawn a Tokio task to run the ROS master
     let core_cancel = tokio_util::sync::CancellationToken::new();
