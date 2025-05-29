@@ -1,5 +1,6 @@
 use log::{error, info};
 use rosserial_rs::RosSerial;
+use std::env;
 use std::error::Error;
 use tokio::select;
 use tokio_serial::SerialPortBuilderExt;
@@ -10,6 +11,16 @@ const ROS_MASTER_URI: &str = "http://0.0.0.0:11311";
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     env_logger::init();
+
+    let args: Vec<String> = env::args().skip(1).collect();
+    if args.len() != 1 {
+        error!(
+            "expected exactly one argument: the path to / identifier of the serial port, but got {} args",
+            args.len()
+        );
+        return Err("expected exactly one argument".into());
+    }
+    let port = args.get(0).unwrap();
 
     // Spawn a Tokio task to run the ROS master
     let core_cancel = tokio_util::sync::CancellationToken::new();
@@ -36,7 +47,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     })
     .await?;
 
-    let port = tokio_serial::new("COM9", 115200).open_native_async()?;
+    let port = tokio_serial::new(port, 115200).open_native_async()?;
 
     let mut rosserial = RosSerial::new(port).await?;
 
