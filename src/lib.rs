@@ -10,7 +10,7 @@ mod codec;
 
 use crate::codec::RosSerialMsgCodec;
 use futures::SinkExt;
-use log::{debug, error, info, trace, warn};
+use log::{error, info, trace, warn};
 use rosrust::error::ResponseError;
 use rosrust::{
     Publisher, RawMessage, RawMessageDescription, RosMsg, ros_debug, ros_err, ros_fatal, ros_info,
@@ -180,7 +180,7 @@ impl RosSerial
             }
             Some(t) => {
                 if let Some(publisher) = self.publishers.get(&t) {
-                    info!("forwarding (publishing) message on topic {}", t);
+                    trace!("forwarding (publishing) message on topic {}", t);
                     publisher.send(msg.into())?;
                 } else {
                     warn!("unknown topic: {:?}", t);
@@ -194,7 +194,7 @@ impl RosSerial
     }
 
     async fn handle_time_request(&mut self) -> Result<()> {
-        debug!("responding to time message");
+        trace!("responding to time message");
         let time = rosrust::wall_time::now();
         let response = RosSerialMsg {
             topic: Some(rosrust_msg::rosserial_msgs::TopicInfo::ID_TIME),
@@ -280,10 +280,17 @@ impl RosSerial
 
     async fn handle_parameter_request(&mut self, msg: RosSerialMsg) -> Result<()> {
         let request = rosrust_msg::rosserial_msgs::RequestParamReq::decode(&msg.msg[..])?;
-        debug!("handling parameter request: {:?}", request);
-        //let param = rosrust::param(request.name.as_str()).ok_or(RosParamNotFound(request.name))?;
-        //param.exists()?;
-        // TODO: handle request
+        trace!("handling parameter request: {:?}", request);
+        let param = rosrust::param(request.name.as_str())
+            .ok_or(Error::RosParamNotFound(request.name.clone()))?;
+        if !param.exists()? {
+            return Err(Error::RosParamNotFound(request.name.clone()));
+        }
+        warn!(
+            "parameter request for {} ignored: not yet implemented, we don't know how to decide on the correct data type!",
+            request.name
+        );
+        // TODO: figure out how to identify the data type of the parameter (not exposed by `rosrust`)
         let response = rosrust_msg::rosserial_msgs::RequestParamRes {
             floats: Vec::new(),
             ints: Vec::new(),
