@@ -242,15 +242,12 @@ impl RosSerial
             msg_type: topic_info.message_type,
         };
 
-        let publisher = tokio::task::spawn_blocking(move || {
-            rosrust::publish_with_description(
-                topic_info.topic_name.as_str(),
-                topic_info.buffer_size as usize,
-                description,
-            )
-        })
-        .await
-        .map_err(|e| Error::RosError(e.into()))??;
+        let publisher = rosrust::publish_with_description(
+            topic_info.topic_name.as_str(),
+            topic_info.buffer_size as usize,
+            description,
+        )
+        .map_err(|e| Error::RosError(e.into()))?;
         self.publishers.insert(topic_info.topic_id, publisher);
 
         Ok(())
@@ -267,20 +264,17 @@ impl RosSerial
 
         self.subscribers.insert(topic_info.topic_id, rx);
 
-        tokio::task::spawn_blocking(move || {
-            let topic_name = topic_info.topic_name.clone();
-            rosrust::subscribe(
-                topic_info.topic_name.as_str(),
-                topic_info.buffer_size as usize,
-                move |msg: RawMessage| {
-                    tx.blocking_send(msg).unwrap_or_else(|e| {
-                        error!("failed to send message on topic {}: {}", topic_name, e)
-                    });
-                },
-            )
-        })
-        .await
-        .map_err(|e| Error::RosError(e.into()))??;
+        let topic_name = topic_info.topic_name.clone();
+        rosrust::subscribe(
+            topic_info.topic_name.as_str(),
+            topic_info.buffer_size as usize,
+            move |msg: RawMessage| {
+                tx.blocking_send(msg).unwrap_or_else(|e| {
+                    error!("failed to send message on topic {}: {}", topic_name, e)
+                });
+            },
+        )
+        .map_err(|e| Error::RosError(e.into()))?;
         Ok(())
     }
 

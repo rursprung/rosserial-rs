@@ -22,6 +22,6 @@ url = "2"
 
 [patch.crates-io]
 # temporary until https://github.com/adnanademovic/rosrust/pull/217 is merged & released
-xml-rpc = { git = "https://github.com/rursprung/xml-rpc-rs.git", branch = "migrate-hyper-to-reqwest" }
+xml-rpc = { git = "https://github.com/rursprung/xml-rpc-rs.git", branch = "migrate-hyper-to-ureq" }
 rosrust = { git = "https://github.com/rursprung/rosrust.git", branch = "update-to-xml-rpc-0.2.0-patched" }
 rosrust_msg = { git = "https://github.com/rursprung/rosrust.git", branch = "update-to-xml-rpc-0.2.0-patched" }
